@@ -1,6 +1,6 @@
 promiseBreak = require('promise-break')
 elasticsearch = require('elasticsearch')
-ora = require('ora')()
+Ora = require('ora')
 axios = require('axios')
 bodybuilder = require('bodybuilder')
 
@@ -20,20 +20,17 @@ optionsDefault={
 	'lead' : ['campaign/lead']
 }
 
+spinner = new Ora()
 
 syncDB = (options)->
-	toSyncArr = prodDataMap = devDbTotalCnt = prodDbTotalCnt = null
+	toSyncArr = devDbTotalCnt = prodDbTotalCnt = null
 
 	Promise.resolve(options)
-		# .tap () -> ora.log('syncing elastic dbs')
+		.tap () -> spinner.start('start syncing devDB with prodDB')
 		.then ()-> checkArgs options
 		.then (toSync)-> toSyncArr=toSync  
-		.then ()-> checkConnection prodDB
-		.then ()-> checkConnection devDB
-		# .then ()-> getIndeces prodDB
-		# .map (indx)-> getTypes indx
-		# .then (mappings)-> prodDataMap = mappings[0]
-		# .then ()-> countDiff prodDataMap
+		.then ()-> checkConnection prodDB, 'prodDB'
+		.then ()-> checkConnection devDB, 'devDB'
 		.then ()-> toSyncArr
 		.then (toSyncArr)-> countRecordsForDB(toSyncArr, devDB, 'devDB')
 		.then (totalCnt)-> devDbTotalCnt=totalCnt
@@ -44,10 +41,14 @@ syncDB = (options)->
 
 		.then ()-> toSyncArr
 		.map (indtype)-> syncType indtype
+		.catch promiseBreak.end
 
 		#if DBs in syc break
-		.catch(promiseBreak.end)
-		.then (console.log)
+		.then ()->
+			spinner.succeed('Everything is in sync now')
+		.catch (err)->
+			spinner.fail()
+			console.error(err)
 
 checkArgs = (options=optionsDefault)->
 
@@ -71,36 +72,17 @@ checkArgs = (options=optionsDefault)->
 				promiseBreak('illegal argument')
 
 
-checkConnection = (db)->
+checkConnection = (db, tag)->
 	Promise.resolve()
 		.then ()-> db.ping requestTimeout:1000			
-		.then (resp)-> console.log("connected")
-		.catch (err)-> 
-			console.error(err)
-			promiseBreak()
-
-getIndeces = (db)->
-	Promise.resolve()
-		.then ()-> db.cat.indices format: 'json'
-		.then (resp) -> resp.filter (indx) -> indx if indx.index[0] isnt '.'
-		.catch console.error
-
-
-getTypes = (indx)-> 
-	currentIndx = indx.index
-	prodDataMap = {}
-	Promise.resolve()
-		.then ()-> prodDB.indices.getMapping index:"#{currentIndx}"
-		.then (resp)-> prodDataMap[currentIndx] = Object.keys(resp[currentIndx].mappings)
-		.then ()-> prodDataMap
+		.then (resp)-> spinner.succeed("#{tag} connected")
 
 
 countRecordsForDB = (typesToSync, db, nameofdb)->
 	Promise.resolve(typesToSync)
-		.map (indtype)-> 
-			countType(indtype, db)
+		.map (indtype)->  countType(indtype, db)
 		.then (cntarr)-> totalCnt = cntarr.sum()
-		.tap (totalCnt)-> console.log "You have #{totalCnt} records for selected types in #{nameofdb}"
+		.tap (totalCnt)-> spinner.info("You have #{totalCnt} records for selected types in #{nameofdb}")
 
 
 cntDiff = (prodDbTotalCnt, devDbTotalCnt)->
@@ -110,7 +92,7 @@ cntDiff = (prodDbTotalCnt, devDbTotalCnt)->
 				promiseBreak('Selected types are in sync')
 			else
 				prodDbTotalCnt - devDbTotalCnt
-		.tap (diff)-> console.log "Prod DB is #{diff} records ahead Dev DB for selected types"
+		.tap (diff)-> spinner.info("Prod DB is #{diff} records ahead Dev DB for selected types")
 
 
 countType = (indtype, db)-> 
@@ -126,15 +108,12 @@ syncType = (indtype)->
 	typeProps.indtype = indtype
 	typeProps.chunkSize = 5000
 	typeProps.moved = 0
+	typeProps.lastdate = 0
 	
 	Promise.resolve()
 		#get last date from db
 		.then ()-> getLastRecord(devDB, indtype)
-		.then (lastRec)->
-			if (lastRec)
-				typeProps.date = lastRec['_source'].date
-			else 
-				typeProps.date = 0
+		.then (lastRec)-> if lastRec then typeProps.lastdate = lastRec['_source'].date
 		.then ()-> countType(indtype, prodDB)
 		.then (cnt)-> typeProps.totalToMove = cnt
 		.then ()-> moveChunk(typeProps)
@@ -150,71 +129,64 @@ getLastRecord = (db, indtype)->
 
 
 	Promise.resolve()
-		.then ()-> db.search
-			index: index
-			type: type
-			body: body
+		.then ()-> db.search {index, type, body}
 		.then (res) -> res.hits.hits[0]
 
 moveChunk = (props)-> 
+	# console.log props.moved, props.totalToMove
+	return if props.moved >= props.totalToMove
 
-	if props.moved is props.totalToMove
-		return
-	else
-		Promise.resolve()
-			.then ()-> getChunk(props)
-			.then (res) -> prepForInsertion(res.hits.hits)
-			.then (formatedChunk) -> writeChunk(formatedChunk)
-			.then () -> props.moved += props.chunkSize
-			.then  ()-> moveChunk(props)
+	Promise.resolve()
+		.then ()-> getChunk(props)
+		.then (res)-> prepForInsertion(res.hits.hits)
+		.then writeChunk
+		.then ()-> props.moved += props.chunkSize
+		.then ()-> moveChunk(props)
 
 
 
 getChunk = (props)->
+	# console.log props.lastdate, 'last date'
 	it = props.indtype.split('/')
 	index = it[0]
 	type = it[1]
-	chunkSize = props.chunkSize
-
-	query = bodybuilder()
-		.filter('range', 'date','gte': props.date)
-		.build()
+	
+	# body = bodybuilder()
+	# 	.filter('range', 'date','gte': props.lastdate)
+	# 	.build()
 
 	Promise.resolve()
-		.then ()-> prodDB.search
-			index: index
-			type: type
-			size: chunkSize
-			from: props.moved
-			query
-		.then (res)-> res
+		.then ()-> prodDB.search {
+			index, type,
+			size: props.chunkSize
+			# from: 0
+			body:
+				sort: [{date:'desc'}]
+				search_after: [(new Date(props.lastdate)).valueOf()]
+		}
 		.tap (res)-> 
-			props.date = res.hits.hits[res.hits.hits.length - 1]['_source'].date
+			console.log res.hits.hits.length
+			if res.hits.hits[res.hits.hits.length-1] is undefined
+				console.dir(res, colors:1, depth:999)
+				console.log new Date(props.lastdate)
+				process.exit()
+			props.lastdate = res.hits.hits[res.hits.hits.length-1]._source.date
 
 
 
 writeChunk = (data)->
 	Promise.resolve(data)
-		.then (data)-> devDB.bulk
-			body: data
-		.then (res)-> res
-
+		.then (body)-> devDB.bulk {body}
 
 prepForInsertion = (data)-> 
+	body = []
 
-	newBody=[]
-	body = data.map (doc, docindex) ->	
-		metaObj = {}
-		return Object.keys(doc).forEach (key, index)->
-			# console.log 'key: ', key,  'index: ', index, 'doc: ', doc
-			if key is '_index'
-				metaObj._index = doc['_index']
-				metaObj._type = doc['_type']
-				metaObj._id = doc['_id']
-				newBody.push index:metaObj
-			else if key is '_source'
-				newBody.push doc[key]
-	return newBody
+	for doc in data
+		body.push JSON.stringify index:{_index:doc._index, _type:doc._type, _id:doc._id}
+		body.push JSON.stringify doc._source
+
+	
+	return body.join '\n'
 
 	
 
