@@ -13,4 +13,4 @@ syncDB = require('./sync')
 # template: 'lead'
 # types: ['campaign/serverclick', 'campaign/clientclick']
 
-syncDB(template: 'lead')
+syncDB()
