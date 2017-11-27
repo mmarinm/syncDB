@@ -28,22 +28,22 @@ syncDB = (options)->
 		.then ()-> checkArgs options
 		.then (toSync)-> toSyncArr=toSync
 		.then ()-> 
-			spinner.succeed('start syncing devDB with prodDB')
+			spinner.succeed 'start syncing devDB with prodDB'
 			spinner.start()
 		.then ()-> checkConnection prodDB, 'prodDB'
 		.then ()-> 
-			spinner.succeed('connection established with prodDB')
+			spinner.succeed 'connection established with prodDB'
 			spinner.start()
 		.then ()-> checkConnection devDB, 'devDB'
 		.then ()-> 
-			spinner.succeed('connection established with devDB')
+			spinner.succeed 'connection established with devDB'
 			spinner.start()
 		.then ()-> toSyncArr
-		.then (toSyncArr) -> checkIndices(toSyncArr)
+		.then (toSyncArr) -> checkIndices toSyncArr
 		.then ()-> toSyncArr
 		.mapSeries (indtype)-> syncType indtype
 		.then ()->
-			spinner.succeed('Everything is in sync now')
+			spinner.succeed 'Everything is in sync now'
 		.catch (err)->
 			spinner.fail(err)
 			promiseBreak.end
@@ -103,21 +103,21 @@ syncType = (indtype)->
 		.tap ()-> 
 			spinner.color='magenta'
 			spinner.text ="syncing #{type} type"
-		.then ()-> countType(indtype, devDB)
+		.then ()-> countType indtype, devDB
 		.tap (count)-> props.totalDevDB = count
-		.then (count)-> getLastRecord(devDB, indtype) if count
+		.then (count)-> getLastRecord devDB, indtype if count
 		.then (lastRec)-> props.lastRecDev = lastRec
-		.then ()-> countType(indtype, prodDB)
+		.then ()-> countType indtype, prodDB
 		.then (count)-> props.totalProdDB = count
-		.then ()-> getAmountNeededToSync(props)
+		.then ()-> getAmountNeededToSync props
 		.tap (count)-> 
 			if count > 0
 				spinner.warn "DevDb is #{count} records behind Prod DB for #{type}"
 				spinner.start()
 		.then (count)-> props.totalToMove = count
-		.then ()-> getLastRecord(prodDB, indtype)
+		.then ()-> getLastRecord prodDB, indtype
 		.then (lastRec)-> props.lastRecProd = lastRec
-		.then ()-> moveChunk(props)
+		.then ()-> moveChunk props
 		.tap ()-> 
 			spinner.succeed "#{type} type is in sync"
 			spinner.start()
@@ -127,7 +127,7 @@ getAmountNeededToSync = (props)->
 	[index, type] = props.indtype.split('/')
 
 	body = bodybuilder()
-		.filter('range', 'date', gt:props.lastRecDev._source.date)
+		.filter 'range', 'date', gt:props.lastRecDev._source.date
 		.build()
 
 	Promise.resolve()
@@ -139,8 +139,8 @@ getLastRecord = (db, indtype)->
 	type = indtype.split('/')[1]
 	
 	body = bodybuilder()
-		.size(1)
-		.sort('date', 'desc')
+		.size 1
+		.sort 'date', 'desc'
 		.build()
 
 	Promise.resolve()
@@ -157,15 +157,14 @@ moveChunk = (props)->
 
 
 	Promise.resolve()
-		.then ()-> getChunk(props)
-		.then (res)-> prepForInsertion(res.hits.hits)
-		.then (body)-> writeChunk(body, props)
+		.then ()-> getChunk props
+		.then (res)-> prepForInsertion res.hits.hits
+		.then (body)-> writeChunk body, props
 		.tap (res)-> props.moved += res.items.length
 		.tap ()-> 
 			spinner.color='green'
 			spinner.text = "#{props.totalToMove - props.moved} records left to sync for #{type} type"
-		# .tap ()-> bar.update(props.moved)
-		.then ()-> moveChunk(props)
+		.then ()-> moveChunk props
 
 
 getChunk = (props)->
@@ -191,7 +190,7 @@ writeChunk = (data, props)->
 	Promise.resolve(data)
 		.tap (data)-> 
 			if data.length is 0
-				spinner.fail('Internal issue with mapping retry')
+				spinner.fail 'Internal issue with mapping retry'
 				promiseBreak()
 		.then (body)-> devDB.bulk {body}
 
