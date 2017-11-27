@@ -4,7 +4,8 @@ Ora = require('ora')
 axios = require('axios')
 bodybuilder = require('bodybuilder')
 _progress = require('cli-progress')
-bar = new _progress.Bar(barsize: 65, _progress.Presets.shades_classic)
+
+# bar = new _progress.Bar(barsize: 65, _progress.Presets.shades_classic)
 
 devDB = new elasticsearch.Client(
 	host: "#{ENV.DEV_HOST}:#{ENV.DEV_PORT}"
@@ -28,43 +29,38 @@ syncDB = (options)->
 	toSyncArr = devDbTotalCnt = prodDbTotalCnt = null
 
 	Promise.resolve(options)
-		.tap () -> spinner.info('start syncing devDB with prodDB')
 		.then ()-> checkArgs options
-		.then (toSync)-> toSyncArr=toSync  
+		.then (toSync)-> toSyncArr=toSync
+		.then ()-> 
+			spinner.succeed('start syncing devDB with prodDB')
+			spinner.start()
 		.then ()-> checkConnection prodDB, 'prodDB'
+		.then ()-> 
+			spinner.succeed('connection established with prodDB')
+			spinner.start()
 		.then ()-> checkConnection devDB, 'devDB'
+		.then ()-> 
+			spinner.succeed('connection established with devDB')
+			spinner.start()
 		.then ()-> toSyncArr
 		.then (toSyncArr) -> checkIndices(toSyncArr)
-		# .then ()-> toSyncArr
-		# .then (toSyncArr)-> countRecordsForDB(toSyncArr, devDB, 'devDB')
-		# .then (totalCnt)-> devDbTotalCnt=totalCnt
-		# .then ()-> toSyncArr
-		# .then (toSyncArr)-> countRecordsForDB(toSyncArr, prodDB, 'prodDB')
-		# .then (totalCnt)-> prodDbTotalCnt=totalCnt
-		# .then () -> cntDiff(prodDbTotalCnt,devDbTotalCnt)
-
 		.then ()-> toSyncArr
-		.map (indtype)-> syncType indtype
-		.catch promiseBreak.end
-
-		#if DBs in syc break
+		.mapSeries (indtype)-> syncType indtype
 		.then ()->
-			bar.stop()
 			spinner.succeed('Everything is in sync now')
+			# bar.stop()
 		.catch (err)->
-			spinner.fail()
-			console.error(err)
+			spinner.fail(err)
+			# console.error(err)
+			promiseBreak.end
+
 
 checkArgs = (options=optionsDefault)->
 	Promise.resolve(options)
 		.then (options)-> 
 			typesToSync = []
-			if options.types
-				for option in options.types
-					typesToSync.push(option)
-				return typesToSync
-			if options.template
-				for option in optionsDefault[options.template]
+			if options.types or options.template
+				for option in options.types or optionsDefault[options.template]
 					typesToSync.push(option)
 				return typesToSync
 			if options is optionsDefault
@@ -79,7 +75,9 @@ checkArgs = (options=optionsDefault)->
 checkConnection = (db, tag)->
 	Promise.resolve()
 		.then ()-> db.ping requestTimeout:1000			
-		.then (resp)-> spinner.succeed("#{tag} connected")
+		.then (resp)-> 
+			spinner.color='green'
+			spinner.text="#{tag} connected"
 
 
 checkIndices = (targets)->
@@ -89,23 +87,6 @@ checkIndices = (targets)->
 		Promise.resolve()
 			.then ()-> devDB.cat.indices {index}
 			.catch ()-> devDB.indices.create {index}
-		
-
-# countRecordsForDB = (typesToSync, db, nameofdb)->
-# 	Promise.resolve(typesToSync)
-# 		.map (indtype)->  countType(indtype, db)
-# 		.then (cntarr)-> totalCnt = cntarr.sum()
-# 		.tap (totalCnt)-> spinner.info("You have #{totalCnt} records for selected types in #{nameofdb}")
-
-
-# cntDiff = (prodDbTotalCnt, devDbTotalCnt)->
-# 	Promise.resolve()
-# 		.then () -> 
-# 			if prodDbTotalCnt - devDbTotalCnt is 0
-# 				promiseBreak('Selected types are in sync')
-# 			else
-# 				prodDbTotalCnt - devDbTotalCnt
-# 		.tap (diff)-> spinner.info("Prod DB is #{diff} records ahead Dev DB for selected types")
 
 
 countType = (indtype, db, filter=0)-> 
@@ -114,6 +95,7 @@ countType = (indtype, db, filter=0)->
 	Promise.resolve()
 		.then ()-> db.count {index, type}
 		.get 'count'
+
 
 syncType = (indtype)->
 	props = {}
@@ -124,21 +106,28 @@ syncType = (indtype)->
 	type = indtype.split('/')[1]
 	
 	Promise.resolve()
-		#get last date from db
+		.tap ()-> 
+			spinner.color='magenta'
+			spinner.text ="syncing #{type} type"
 		.then ()-> countType(indtype, devDB)
 		.tap (count)-> props.totalDevDB = count
-		.tap  (count)-> spinner.info("You have #{count} records for #{type} type in DevDB")
 		.then (count)-> getLastRecord(devDB, indtype) if count
 		.then (lastRec)-> props.lastRecDev = lastRec
 		.then ()-> countType(indtype, prodDB)
-		.tap  (count)-> spinner.info("You have #{count} records for #{type} type in ProdDB")		
 		.then (count)-> props.totalProdDB = count
 		.then ()-> getAmountNeededToSync(props)
+		.tap (count)-> 
+			if count > 0
+				spinner.warn "DevDb is #{count} records behind Prod DB for #{type}"
+				spinner.start()
 		.then (count)-> props.totalToMove = count
 		.then ()-> getLastRecord(prodDB, indtype)
 		.then (lastRec)-> props.lastRecProd = lastRec
-		.tap ()-> bar.start(props.totalToMove, 0)
+		# .tap ()-> bar.start(props.totalToMove, 0)
 		.then ()-> moveChunk(props)
+		.tap ()-> 
+			spinner.succeed "#{type} type is in sync"
+			spinner.start()
 
 getAmountNeededToSync = (props)->
 	return props.totalProdDB if not props.lastRecDev
@@ -167,17 +156,23 @@ getLastRecord = (db, indtype)->
 
 
 moveChunk = (props)->
+	type = props.indtype.split('/')[1]
+
 	return if props.lastRecDev?._id is props.lastRecProd._id
-	return if props.moved >= props.totalToMove
+	if props.moved >= props.totalToMove
+		return
+
 
 	Promise.resolve()
 		.then ()-> getChunk(props)
 		.then (res)-> prepForInsertion(res.hits.hits)
 		.then (body)-> writeChunk(body, props)
 		.tap (res)-> props.moved += res.items.length
-		.tap ()-> bar.update(props.moved)
+		.tap ()-> 
+			spinner.color='green'
+			spinner.text = "#{props.totalToMove - props.moved} records left to sync for #{type} type"
+		# .tap ()-> bar.update(props.moved)
 		.then ()-> moveChunk(props)
-
 
 
 getChunk = (props)->
@@ -201,7 +196,11 @@ getChunk = (props)->
 
 writeChunk = (data, props)->
 	Promise.resolve(data)
-		.then (body)-> devDB.bulk {body}	
+		.tap (data)-> 
+			if data.length is 0
+				spinner.fail('Internal issue with mapping retry')
+				promiseBreak()
+		.then (body)-> devDB.bulk {body}
 
 
 prepForInsertion = (data)-> 
