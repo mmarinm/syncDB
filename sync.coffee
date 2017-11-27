@@ -5,16 +5,12 @@ axios = require('axios')
 bodybuilder = require('bodybuilder')
 _progress = require('cli-progress')
 
-# bar = new _progress.Bar(barsize: 65, _progress.Presets.shades_classic)
-
 devDB = new elasticsearch.Client(
 	host: "#{ENV.DEV_HOST}:#{ENV.DEV_PORT}"
-	# log: 'trace'
 )
 
 prodDB = new elasticsearch.Client(
 	host: "#{ENV.PROD_HOST}:#{ENV.PROD_PORT}"
-	# log: 'trace'
 )
 
 optionsDefault={
@@ -48,10 +44,8 @@ syncDB = (options)->
 		.mapSeries (indtype)-> syncType indtype
 		.then ()->
 			spinner.succeed('Everything is in sync now')
-			# bar.stop()
 		.catch (err)->
 			spinner.fail(err)
-			# console.error(err)
 			promiseBreak.end
 
 
@@ -123,7 +117,6 @@ syncType = (indtype)->
 		.then (count)-> props.totalToMove = count
 		.then ()-> getLastRecord(prodDB, indtype)
 		.then (lastRec)-> props.lastRecProd = lastRec
-		# .tap ()-> bar.start(props.totalToMove, 0)
 		.then ()-> moveChunk(props)
 		.tap ()-> 
 			spinner.succeed "#{type} type is in sync"
